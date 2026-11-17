@@ -11,6 +11,7 @@ from django.utils import timezone as djangotime
 from packaging import version as pyver
 from rest_framework.authentication import TokenAuthentication
 from rest_framework.authtoken.models import Token
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -311,6 +312,15 @@ class CheckRunner(APIView):
             user=request.user,
         )
 
+        # an agent may only report results for its own checks or policy checks
+        # applied to it, never another agent's (which could fire that agent's tasks)
+        if check.agent_id is not None and check.agent_id != agent.pk:
+            return notify_error("Check does not belong to this agent")
+        if check.agent_id is None and check.pk not in {
+            c.pk for c in agent.get_checks_with_policies()
+        }:
+            return notify_error("Check does not belong to this agent")
+
         # get check result or create if doesn't exist
         check_result, created = CheckResult.objects.defer(
             *CHECK_RESULT_DEFER
@@ -528,6 +538,21 @@ class NewAgent(APIView):
 
         if not is_valid_agent_id(request.data.get("agent_id", "")):
             return notify_error("Invalid agent_id")
+
+        # only installer tokens, or dashboard users allowed to install agents on
+        # that site, may enroll an agent (any authenticated user could before)
+        if not request.user.is_installer_user:
+            from tacticalrmm.permissions import _has_perm, _has_perm_on_site
+
+            try:
+                site_id = int(request.data["site"])
+            except (KeyError, TypeError, ValueError):
+                return notify_error("Invalid site")
+            if not (
+                _has_perm(request, "can_install_agents")
+                and _has_perm_on_site(request.user, site_id)
+            ):
+                raise PermissionDenied()
 
         try:
             with transaction.atomic():

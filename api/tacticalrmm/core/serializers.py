@@ -17,6 +17,22 @@ from .models import (
     URLAction,
 )
 
+# credentials stored in CoreSettings; returned only to users who may edit them
+CORE_SECRET_FIELDS = (
+    "mesh_token",
+    "smtp_host_password",
+    "twilio_auth_token",
+    "open_ai_token",
+)
+SECRET_MASK = "********"
+
+
+def mask_core_secrets(data: dict) -> dict:
+    for field in CORE_SECRET_FIELDS:
+        if data.get(field):
+            data[field] = SECRET_MASK
+    return data
+
 
 class HostedCoreMixin:
     def to_representation(self, instance):
@@ -37,6 +53,16 @@ class CoreSettingsSerializer(HostedCoreMixin, serializers.ModelSerializer):
 
     def all_time_zones(self, obj):
         return ALL_TIMEZONES
+
+    def to_representation(self, instance):
+        from tacticalrmm.permissions import _has_perm
+
+        ret = super().to_representation(instance)
+        request = self.context.get("request")
+        # read-only core settings access must not leak the Mesh login key etc.
+        if request is None or not _has_perm(request, "can_edit_core_settings"):
+            mask_core_secrets(ret)
+        return ret
 
     def validate(self, attrs):
         instance = getattr(self, "instance", None)
@@ -68,8 +94,11 @@ class CoreSettingsSerializer(HostedCoreMixin, serializers.ModelSerializer):
         fields = "__all__"
 
 
-# for audting
+# for audting; secrets never go into the audit log
 class CoreSerializer(HostedCoreMixin, serializers.ModelSerializer):
+    def to_representation(self, instance):
+        return mask_core_secrets(super().to_representation(instance))
+
     class Meta:
         model = CoreSettings
         fields = "__all__"
