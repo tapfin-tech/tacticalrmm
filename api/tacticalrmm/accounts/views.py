@@ -485,11 +485,23 @@ class GetUpdateDeleteAPIKey(APIView):
         return Response("The API Key was deleted")
 
 
+def _logout_other_sessions(request) -> None:
+    """After a credential change, end every other dashboard session of the user."""
+    current = getattr(request, "auth", None)
+    tokens = AuthToken.objects.filter(user=request.user)
+    if isinstance(current, AuthToken):
+        tokens = tokens.exclude(digest=current.digest)
+    tokens.delete()
+
+
 class ResetPass(APIView):
     permission_classes = [IsAuthenticated, SelfResetSSOPerms]
 
     def put(self, request):
         user = request.user
+        if not user.check_password(request.data.get("current_password") or ""):
+            return notify_error("Current password is incorrect")
+
         try:
             validate_password(request.data["password"], user=user)
         except ValidationError as e:
@@ -497,6 +509,7 @@ class ResetPass(APIView):
 
         user.set_password(request.data["password"])
         user.save()
+        _logout_other_sessions(request)
         return Response("Password was reset.")
 
 
@@ -505,6 +518,10 @@ class Reset2FA(APIView):
 
     def put(self, request):
         user = request.user
+        if not user.check_password(request.data.get("current_password") or ""):
+            return notify_error("Current password is incorrect")
+
         user.totp_key = ""
         user.save()
+        _logout_other_sessions(request)
         return Response("2FA was reset. Log out and back in to setup.")

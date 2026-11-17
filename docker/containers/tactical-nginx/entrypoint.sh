@@ -198,6 +198,8 @@ server  {
     add_header Strict-Transport-Security "max-age=31536000" always;
     add_header X-Frame-Options DENY always;
     add_header Referrer-Policy no-referrer always;
+    # dashboard CSP: the API token lives in localStorage, so only same-origin scripts may run
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https://${API_HOST} wss://${API_HOST}; frame-src https://${MESH_HOST} blob:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self' https://${API_HOST}; frame-ancestors 'none'" always;
 }
 
 server {
