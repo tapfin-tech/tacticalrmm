@@ -22,9 +22,16 @@ set -e
 : "${SMTP_PASS:=mesh-smtp-pass}"
 : "${SMTP_TLS:=false}"
 
+# refuse to start with the well-known default credentials
+if [ "${MESH_PASS}" = "meshcentralpass" ] || [ "${MONGODB_PASSWORD}" = "mongopass" ]; then
+  echo "ERROR: MESH_PASS / MONGODB_PASSWORD are the defaults; set strong secrets" >&2
+  exit 1
+fi
+
 if [ ! -f "/home/node/app/meshcentral-data/config.json" ] || [[ "${MESH_PERSISTENT_CONFIG}" -eq 0 ]]; then
 
-  encoded_uri=$(node -p "encodeURI('mongodb://${MONGODB_USER}:${MONGODB_PASSWORD}@${MONGODB_HOST}:${MONGODB_PORT}')")
+  # credentials are read from the environment so quotes can't break the JS
+  encoded_uri=$(MONGODB_USER="${MONGODB_USER}" MONGODB_PASSWORD="${MONGODB_PASSWORD}" node -p "'mongodb://' + encodeURIComponent(process.env.MONGODB_USER) + ':' + encodeURIComponent(process.env.MONGODB_PASSWORD) + '@${MONGODB_HOST}:${MONGODB_PORT}'")
 
   mesh_config="$(
     cat <<EOF
@@ -81,7 +88,7 @@ EOF
   echo "${mesh_config}" >/home/node/app/meshcentral-data/config.json
 fi
 
-node node_modules/meshcentral --createaccount ${MESH_USER} --pass ${MESH_PASS} --email example@example.com
+node node_modules/meshcentral --createaccount "${MESH_USER}" --pass "${MESH_PASS}" --email example@example.com
 node node_modules/meshcentral --adminaccount ${MESH_USER}
 
 if [ ! -f "${TACTICAL_DIR}/tmp/mesh_token" ]; then

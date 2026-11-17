@@ -67,6 +67,8 @@ else
         set \$api ${BACKEND_SERVICE}:${API_PORT};
 
         include         uwsgi_params;
+        # append the peer address so Django can count trusted proxies (TRMM_NUM_PROXIES)
+        uwsgi_param     HTTP_X_FORWARDED_FOR \$proxy_add_x_forwarded_for;
         uwsgi_pass      \$api;
 "
 
@@ -80,6 +82,9 @@ fi
 
 nginx_config="$(
     cat <<EOF
+log_format trmm_noquery '\$remote_addr - \$remote_user [\$time_local] "\$request_method \$uri \$server_protocol" '
+                        '\$status \$body_bytes_sent "\$http_referer" "\$http_user_agent"';
+
 # backend config
 server  {
     resolver ${NGINX_RESOLVER} valid=30s;
@@ -142,8 +147,13 @@ server  {
     ssl_prefer_server_ciphers on;
     ssl_ciphers EECDH+AESGCM:EDH+AESGCM;
     ssl_ecdh_curve secp384r1;
-    add_header X-Content-Type-Options nosniff;
-    
+    add_header X-Content-Type-Options nosniff always;
+    add_header Strict-Transport-Security "max-age=31536000" always;
+    add_header X-Frame-Options DENY always;
+    add_header Referrer-Policy no-referrer always;
+
+    # websocket tokens travel in the query string: log the path only
+    access_log /var/log/nginx/access.log trmm_noquery;
 }
 
 server {
@@ -184,8 +194,10 @@ server  {
     ssl_prefer_server_ciphers on;
     ssl_ciphers EECDH+AESGCM:EDH+AESGCM;
     ssl_ecdh_curve secp384r1;
-    add_header X-Content-Type-Options nosniff;
-    
+    add_header X-Content-Type-Options nosniff always;
+    add_header Strict-Transport-Security "max-age=31536000" always;
+    add_header X-Frame-Options DENY always;
+    add_header Referrer-Policy no-referrer always;
 }
 
 server {
@@ -212,7 +224,11 @@ server {
     ssl_prefer_server_ciphers on;
     ssl_ciphers EECDH+AESGCM:EDH+AESGCM;
     ssl_ecdh_curve secp384r1;
-    add_header X-Content-Type-Options nosniff;
+    add_header X-Content-Type-Options nosniff always;
+    add_header Strict-Transport-Security "max-age=31536000" always;
+    # mesh is embedded by the dashboard only
+    add_header Content-Security-Policy "frame-ancestors https://${APP_HOST}" always;
+    access_log /var/log/nginx/access.log trmm_noquery;
 
     location / {
         #Using variable to disable start checks
