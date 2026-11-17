@@ -52,6 +52,9 @@ class TestAccounts(TacticalTestCase):
     @patch("pyotp.TOTP.verify")
     def test_login_view(self, mock_verify):
         url = "/v2/login/"
+        # TOTP is only checked for users who have enrolled
+        self.bob.totp_key = "AB5RI6YPFTZAS52G"
+        self.bob.save()
 
         mock_verify.return_value = True
         data = {"username": "bob", "password": "hunter2", "twofactor": "123456"}

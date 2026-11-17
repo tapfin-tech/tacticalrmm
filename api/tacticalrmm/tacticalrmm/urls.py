@@ -46,8 +46,14 @@ if not getattr(settings, "DEMO", False):
     urlpatterns += (
         path("api/v3/", include("apiv3.urls")),
         path("api/v4/", include("apiv4.urls")),
-        path("reporting/", include("ee.reporting.urls")),
     )
+
+# CVE-2026-129165: the report preview reads local files (SECRET_KEY -> NATS).
+# Off unless explicitly re-enabled once a fixed upstream release is deployed.
+if not getattr(settings, "DEMO", False) and not getattr(
+    settings, "TRMM_DISABLE_REPORTING", True
+):
+    urlpatterns += (path("reporting/", include("ee.reporting.urls")),)
 
 if not getattr(settings, "TRMM_DISABLE_SSO", False):
     urlpatterns += (

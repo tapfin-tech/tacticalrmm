@@ -4,7 +4,7 @@ import os
 from django.conf import settings
 from django.core.management.base import BaseCommand
 
-from tacticalrmm.helpers import get_nats_url
+from tacticalrmm.helpers import get_nats_admin_password, get_nats_url
 
 
 class Command(BaseCommand):
@@ -21,7 +21,7 @@ class Command(BaseCommand):
             ssl = "disable"
 
         config = {
-            "key": settings.SECRET_KEY,
+            "key": get_nats_admin_password(),
             "natsurl": get_nats_url(),
             "user": db["USER"],
             "pass": db["PASSWORD"],

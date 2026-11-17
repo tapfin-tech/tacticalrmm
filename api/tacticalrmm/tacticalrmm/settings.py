@@ -37,7 +37,7 @@ LATEST_AGENT_VER = "2.12.0"
 
 MESH_VER = "1.3.1"
 
-NATS_SERVER_VER = "2.15.1"
+NATS_SERVER_VER = "2.15.3"
 
 # Install Nushell on the agent
 # https://github.com/nushell/nushell
@@ -124,6 +124,21 @@ TRMM_CHECK_CREDS_MIN_THROTTLE = 10
 TRMM_CHECK_CREDS_DAY_THROTTLE = 300
 TRMM_LOGIN_MIN_THROTTLE = 10
 TRMM_LOGIN_DAY_THROTTLE = 300
+
+# security hardening (tapfin security/hardening branch), override in local_settings
+# reverse proxies that append to X-Forwarded-For (bundled nginx = 1, + host nginx = 2)
+TRMM_NUM_PROXIES = 1
+# refuse API access to users without TOTP until they enrol (server side)
+TRMM_ENFORCE_2FA = True
+# accepted TOTP steps either side of now (30s each)
+TRMM_TOTP_VALID_WINDOW = 1
+# URL actions / webhooks may not target private networks unless allowed here
+TRMM_URL_ACTION_ALLOW_PRIVATE = False
+TRMM_URL_ACTION_ALLOWED_HOSTS: list[str] = []
+# serve the EE reporting endpoints (CVE-2026-129165 is unpatched upstream)
+TRMM_DISABLE_REPORTING = True
+# set to e.g. "rmm.example.com" to keep cookies off sibling subdomains
+TRMM_COOKIE_DOMAIN = ""
 
 if not DOCKER_BUILD:
     ALLOWED_HOSTS = []
@@ -226,6 +241,14 @@ if not DOCKER_BUILD:
         "socialaccount_login_error": f"{CORS_ORIGIN_WHITELIST[0]}/account/provider/callback"
     }
 
+# applies to standard and docker installs alike (docker skips the block above)
+if TRMM_COOKIE_DOMAIN:
+    SESSION_COOKIE_DOMAIN = TRMM_COOKIE_DOMAIN
+    CSRF_COOKIE_DOMAIN = TRMM_COOKIE_DOMAIN
+if TRMM_PROTO == "https":
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+
 CHECK_TOKEN_URL = f"{AGENT_BASE_URL}/api/v2/checktoken"
 AGENTS_URL = f"{AGENT_BASE_URL}/api/v2/agents/?"
 EXE_GEN_URL = f"{AGENT_BASE_URL}/api/v2/exe"
@@ -235,13 +258,16 @@ if "GHACTIONS" in os.environ:
     DEBUG = False
     ADMIN_ENABLED = False
     DEMO = False
+    # keep the EE reporting routes so upstream's reporting tests still run
+    TRMM_DISABLE_REPORTING = False
 
 REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAuthenticated",),
     "DEFAULT_AUTHENTICATION_CLASSES": (
-        "knox.auth.TokenAuthentication",
+        "tacticalrmm.security.EnforcedTOTPKnoxAuthentication",
         "tacticalrmm.auth.APIAuthentication",
     ),
+    "NUM_PROXIES": TRMM_NUM_PROXIES,
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_THROTTLE_RATES": {
         "check_creds_min": f"{TRMM_CHECK_CREDS_MIN_THROTTLE}/minute",

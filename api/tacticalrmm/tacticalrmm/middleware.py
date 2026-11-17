@@ -3,7 +3,6 @@ from contextlib import suppress
 from typing import Any, Dict, Optional
 
 from django.conf import settings
-from python_ipware import IpWare
 from rest_framework.exceptions import AuthenticationFailed
 
 from tacticalrmm.constants import DEMO_NOT_ALLOWED
@@ -104,10 +103,9 @@ class LogIPMiddleware:
         self.get_response = get_response
 
     def __call__(self, request):
-        ipw = IpWare()
-        client_ip, _ = ipw.get_client_ip(request.META)
+        from tacticalrmm.security import get_client_ip
 
-        request._client_ip = str(client_ip) if client_ip else ""
+        request._client_ip = get_client_ip(request.META)
         response = self.get_response(request)
         return response
 
