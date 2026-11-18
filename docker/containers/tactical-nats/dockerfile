@@ -1,4 +1,13 @@
-FROM nats:2.15.1-alpine
+# build nats-api from source instead of shipping the committed prebuilt binary
+FROM golang:1.25-alpine@sha256:1ae0735f00daffa3aaf1363a5184c0d2dc55c78e3db4ec70241cdac97bf84b59 AS NATSAPI_BUILD
+
+WORKDIR /src
+COPY go.mod go.sum main.go ./
+COPY natsapi ./natsapi
+RUN rm -rf natsapi/bin && \
+    CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/nats-api .
+
+FROM nats:2.15.3-alpine@sha256:558394a23dd3c36f2d3a64b51865fd09908010e80a542cea5e75c2af543ed62a
 
 ENV TACTICAL_DIR /opt/tactical
 ENV TACTICAL_READY_FILE ${TACTICAL_DIR}/tmp/tactical.ready
@@ -7,7 +16,7 @@ RUN apk add --no-cache supervisor bash
 
 SHELL ["/bin/bash", "-e", "-o", "pipefail", "-c"]
 
-COPY natsapi/bin/nats-api /usr/local/bin/
+COPY --from=NATSAPI_BUILD /out/nats-api /usr/local/bin/
 RUN chmod +x /usr/local/bin/nats-api
 
 RUN touch /usr/local/bin/config_watcher.sh

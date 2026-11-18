@@ -36,6 +36,7 @@ from tacticalrmm.constants import (
 )
 from tacticalrmm.helpers import (
     get_certs,
+    get_nats_admin_password,
     get_nats_hosts,
     get_nats_internal_protocol,
     get_nats_ports,
@@ -228,7 +229,7 @@ def reload_nats() -> None:
             "users": [
                 {
                     "user": "tacticalrmm",
-                    "password": settings.SECRET_KEY,
+                    "password": get_nats_admin_password(),
                     "permissions": {"publish": ">", "subscribe": ">"},
                 }
             ],
@@ -308,6 +309,11 @@ def get_user(access_token):
     except Exception:
         return AnonymousUser()
     else:
+        from tacticalrmm.security import requires_totp_enrolment
+
+        # same rule as the REST API: no TOTP, no dashboard websockets
+        if requires_totp_enrolment(user[0]):
+            return AnonymousUser()
         return user[0]
 
 
@@ -359,6 +365,26 @@ RE_DB_VALUE = re.compile(
 # This will recursively lookup values for relations. {{ client.site.id }}
 #
 # You can also use {{ global.value }} without an obj instance to use the global key store
+# Attributes that hold credentials and may never be resolved into scripts,
+# URL actions or webhooks.
+BLOCKED_DB_VALUE_PROPS = frozenset(
+    {
+        "user",
+        "users",
+        "auth_token",
+        "auth_token_set",
+        "password",
+        "totp_key",
+        "token",
+        "key",
+        "mesh_token",
+        "smtp_host_password",
+        "twilio_auth_token",
+        "open_ai_token",
+    }
+)
+
+
 def get_db_value(
     *, string: str, instance: Optional[Union["Agent", "Client", "Site", "Alert"]] = None
 ) -> Union[str, List[str], Literal[True], Literal[False], None]:
@@ -422,6 +448,14 @@ def get_db_value(
 
     # look through all properties and return the value
     for prop in props:
+        # never resolve credentials (e.g. {{agent.user.auth_token.key}})
+        if prop.startswith("_") or prop.lower() in BLOCKED_DB_VALUE_PROPS:
+            DebugLog.error(
+                log_type=DebugLogType.SCRIPTING,
+                message=f"Lookup of '{prop}' in {string} is not allowed",
+            )
+            return None
+
         if hasattr(instance_value, prop):
             value = getattr(instance_value, prop)
             if callable(value):

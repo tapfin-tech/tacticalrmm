@@ -1,4 +1,4 @@
-FROM nginxinc/nginx-unprivileged:stable-alpine
+FROM nginxinc/nginx-unprivileged:stable-alpine@sha256:f5116ed4606f3eb015dd4a8e28cb9b351476dc0ad4bc6e9f93b19cec130cdf03
 
 ENV PUBLIC_DIR /usr/share/nginx/html
 ENV TACTICAL_DIR /opt/tactical
@@ -15,9 +15,13 @@ SHELL ["/bin/bash", "-e", "-o", "pipefail", "-c"]
 
 COPY api/tacticalrmm/tacticalrmm/settings.py /tmp/settings.py
 
+# sha256 of trmm-web-v<WEB_VERSION>.tar.gz; update together with WEB_VERSION
+ARG WEB_TAR_SHA256=d2b157400bc8bb1f55d727d8c7241d929b012e5684b82d28ace2850af1554044
+
 RUN WEB_VERSION=$(grep -o 'WEB_VERSION.*' /tmp/settings.py | cut -d'"' -f 2) \
   && webtar="trmm-web-v${WEB_VERSION}.tar.gz" \
   && wget -q "https://github.com/amidaware/tacticalrmm-web/releases/download/v${WEB_VERSION}/${webtar}" -O /tmp/${webtar} \
+  && echo "${WEB_TAR_SHA256}  /tmp/${webtar}" | sha256sum -c - \
   && tar -xzf /tmp/${webtar} -C ${PUBLIC_DIR} \
   && rm -f /tmp/${webtar}
 

@@ -1,4 +1,4 @@
-FROM node:24-alpine
+FROM node:24-alpine@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5
 
 WORKDIR /home/node/app
 
@@ -10,21 +10,14 @@ SHELL ["/bin/bash", "-e", "-o", "pipefail", "-c"]
 
 COPY api/tacticalrmm/tacticalrmm/settings.py /tmp/settings.py
 
-RUN MESH_VER=$(grep -o 'MESH_VER.*' /tmp/settings.py | cut -d'"' -f 2) && \
-    cat > package.json <<EOF
-{
-  "dependencies": {
-    "archiver": "7.0.1",
-    "meshcentral": "$MESH_VER",
-    "mongodb": "4.13.0",
-    "otplib": "13.4.1",
-    "pg": "8.16.3",
-    "saslprep": "1.0.3"
-  }
-}
-EOF
+# exact dependency tree with integrity hashes; regenerate the lock when MESH_VER changes
+COPY docker/containers/tactical-meshcentral/package.json docker/containers/tactical-meshcentral/package-lock.json ./
 
-RUN npm install
+RUN MESH_VER=$(grep -o 'MESH_VER.*' /tmp/settings.py | cut -d'"' -f 2) && \
+    grep -q "\"meshcentral\": \"${MESH_VER}\"" package.json || \
+      { echo "package.json meshcentral version does not match MESH_VER=${MESH_VER}" >&2; exit 1; }
+
+RUN npm ci --omit=dev
 
 RUN chown -R node:node /home/node
 

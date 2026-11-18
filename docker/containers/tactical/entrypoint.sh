@@ -18,9 +18,14 @@ set -e
 : "${APP_HOST:=tactical-frontend}"
 : "${REDIS_HOST:=tactical-redis}"
 : "${SKIP_UWSGI_CONFIG:=0}"
-: "${TRMM_DISABLE_WEB_TERMINAL:=False}"
-: "${TRMM_DISABLE_SERVER_SCRIPTS:=False}"
+: "${TRMM_DISABLE_WEB_TERMINAL:=True}"
+: "${TRMM_DISABLE_SERVER_SCRIPTS:=True}"
 : "${TRMM_DISABLE_SSO:=False}"
+# security hardening, see api/tacticalrmm/tacticalrmm/settings.py
+: "${TRMM_NUM_PROXIES:=1}"
+: "${TRMM_DISABLE_REPORTING:=True}"
+: "${TRMM_URL_ACTION_ALLOW_PRIVATE:=False}"
+: "${TRMM_ENFORCE_2FA:=True}"
 
 : "${CERT_PRIV_PATH:=${TACTICAL_DIR}/certs/privkey.pem}"
 : "${CERT_PUB_PATH:=${TACTICAL_DIR}/certs/fullchain.pem}"
@@ -35,6 +40,16 @@ function check_tactical_ready {
 
 # tactical-init
 if [ "$1" = 'tactical-init' ]; then
+
+  # refuse to install with the well-known default credentials
+  # (MESH_PASS is checked by the meshcentral container, which receives it)
+  for pair in "TRMM_PASS:tactical" "POSTGRES_PASS:tactical"; do
+    var="${pair%%:*}"
+    if [ -z "${!var}" ] || [ "${!var}" = "${pair#*:}" ]; then
+      echo "ERROR: ${var} is empty or the default value; set a strong secret" >&2
+      exit 1
+    fi
+  done
 
   test -f "${TACTICAL_READY_FILE}" && rm "${TACTICAL_READY_FILE}"
 
@@ -72,9 +87,14 @@ if [ "$1" = 'tactical-init' ]; then
   MESH_TOKEN=$(cat ${TACTICAL_DIR}/tmp/mesh_token)
   ADMINURL=$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 70 | head -n 1)
   DJANGO_SEKRET=$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 80 | head -n 1)
+  # NATS admin password (commands every agent) is kept apart from SECRET_KEY
+  NATS_ADMIN_PASSWORD=$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 80 | head -n 1)
+  # quote secrets as Python literals so special characters can't break or inject
+  PG_PASS_LITERAL=$(POSTGRES_PASS="${POSTGRES_PASS}" python -c 'import os; print(repr(os.environ["POSTGRES_PASS"]))')
   BASE_DOMAIN=$(echo "import tldextract; no_fetch_extract = tldextract.TLDExtract(suffix_list_urls=()); extracted = no_fetch_extract('${API_HOST}'); print(f'{extracted.domain}.{extracted.suffix}')" | python)
-  : "${SESSION_COOKIE_DOMAIN:=$BASE_DOMAIN}"
-  : "${CSRF_COOKIE_DOMAIN:=$BASE_DOMAIN}"
+  # cookie domain: set TRMM_COOKIE_DOMAIN (e.g. rmm.example.com) to keep the
+  # session cookie off sibling subdomains; SESSION_COOKIE_DOMAIN kept for compat
+  : "${TRMM_COOKIE_DOMAIN:=${SESSION_COOKIE_DOMAIN:-$BASE_DOMAIN}}"
 
   localvars="$(
     cat <<EOF
@@ -98,9 +118,7 @@ ADMIN_URL = '${ADMINURL}/'
 
 CORS_ORIGIN_WHITELIST = ['https://${APP_HOST}']
 
-
-SESSION_COOKIE_DOMAIN='${SESSION_COOKIE_DOMAIN}'
-CSRF_COOKIE_DOMAIN='${CSRF_COOKIE_DOMAIN}'
+TRMM_COOKIE_DOMAIN = '${TRMM_COOKIE_DOMAIN}'
 CSRF_TRUSTED_ORIGINS = ['https://${API_HOST}', 'https://${APP_HOST}']
 
 HEADLESS_FRONTEND_URLS = {'socialaccount_login_error': 'https://${APP_HOST}/account/provider/callback'}
@@ -110,7 +128,7 @@ DATABASES = {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': '${POSTGRES_DB}',
         'USER': '${POSTGRES_USER}',
-        'PASSWORD': '${POSTGRES_PASS}',
+        'PASSWORD': ${PG_PASS_LITERAL},
         'HOST': '${POSTGRES_HOST}',
         'PORT': '${POSTGRES_PORT}',
     }
@@ -125,10 +143,17 @@ ADMIN_ENABLED = False
 TRMM_DISABLE_WEB_TERMINAL = ${TRMM_DISABLE_WEB_TERMINAL}
 TRMM_DISABLE_SERVER_SCRIPTS = ${TRMM_DISABLE_SERVER_SCRIPTS}
 TRMM_DISABLE_SSO = ${TRMM_DISABLE_SSO}
+
+NATS_ADMIN_PASSWORD = '${NATS_ADMIN_PASSWORD}'
+ROOT_USER = '${TRMM_USER}'
+TRMM_NUM_PROXIES = ${TRMM_NUM_PROXIES}
+TRMM_DISABLE_REPORTING = ${TRMM_DISABLE_REPORTING}
+TRMM_URL_ACTION_ALLOW_PRIVATE = ${TRMM_URL_ACTION_ALLOW_PRIVATE}
+TRMM_ENFORCE_2FA = ${TRMM_ENFORCE_2FA}
 EOF
   )"
 
-  echo "${localvars}" >${TACTICAL_DIR}/api/tacticalrmm/local_settings.py
+  (umask 077 && echo "${localvars}" >${TACTICAL_DIR}/api/tacticalrmm/local_settings.py)
 
   # run migrations and init scripts
   python manage.py pre_update_tasks
@@ -153,7 +178,8 @@ EOF
 
   # create super user
   echo "Creating dashboard user if it doesn't exist"
-  echo "from accounts.models import User; User.objects.create_superuser('${TRMM_USER}', 'admin@example.com', '${TRMM_PASS}') if not User.objects.filter(username='${TRMM_USER}').exists() else 0;" | python manage.py shell
+  # credentials go through the environment, never into the Python source
+  echo "import os; from accounts.models import User; u, p = os.environ['TRMM_USER'], os.environ['TRMM_PASS']; User.objects.create_superuser(u, 'admin@example.com', p) if not User.objects.filter(username=u).exists() else 0;" | TRMM_USER="${TRMM_USER}" TRMM_PASS="${TRMM_PASS}" python manage.py shell
 
   # chown everything to tactical user
   echo "Updating permissions on files"

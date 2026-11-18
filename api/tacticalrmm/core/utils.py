@@ -294,26 +294,33 @@ def _run_url_rest_action(*, url: str, method, body: str, headers: str, instance=
     new_url = requote_uri(new_url)
 
     new_body = _sanitize_webhook(new_body)
+    # bodies and headers can carry keystore secrets: log the error, not the values
     try:
         new_body = json.loads(new_body, strict=False)
     except Exception as e:
-        logger.error(f"{e=} {body=}")
-        logger.error(f"{new_body=}")
+        logger.error(f"URL action body is not valid JSON: {e}")
 
     try:
         new_headers = json.loads(new_headers, strict=False)
     except Exception as e:
-        logger.error(f"{e=} {headers=}")
-        logger.error(f"{new_headers=}")
+        logger.error(f"URL action headers are not valid JSON: {e}")
+
+    from tacticalrmm.security import validate_outbound_url
+
+    # SSRF: refuse internal targets; no redirects, so a public URL can't bounce inward
+    validate_outbound_url(new_url)
 
     if method in ("get", "delete"):
-        return getattr(requests, method)(new_url, headers=new_headers)
+        return getattr(requests, method)(
+            new_url, headers=new_headers, timeout=8, allow_redirects=False
+        )
 
     return getattr(requests, method)(
         new_url,
         data=json.dumps(new_body),
         headers=new_headers,
         timeout=8,
+        allow_redirects=False,
     )
 
 

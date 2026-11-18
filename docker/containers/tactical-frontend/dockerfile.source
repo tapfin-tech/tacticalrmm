@@ -1,0 +1,39 @@
+# Frontend image built from tacticalrmm-web source instead of the upstream
+# release tarball. Pass the web repo as a named build context:
+#
+#   docker buildx build --build-context web=../tacticalrmm-web \
+#     -f docker/containers/tactical-frontend/dockerfile.source -t tactical-frontend .
+
+FROM node:24-alpine@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5 AS build
+
+WORKDIR /web
+COPY --from=web package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY --from=web . .
+RUN rm -f .env && npx quasar build
+
+FROM nginxinc/nginx-unprivileged:stable-alpine@sha256:f5116ed4606f3eb015dd4a8e28cb9b351476dc0ad4bc6e9f93b19cec130cdf03
+
+ENV PUBLIC_DIR /usr/share/nginx/html
+ENV TACTICAL_DIR /opt/tactical
+ENV TACTICAL_READY_FILE ${TACTICAL_DIR}/tmp/tactical.ready
+USER root
+
+RUN deluser --remove-home nginx \
+  && addgroup -S nginx -g 1000 \
+  && adduser -S -G nginx -u 1000 nginx
+
+RUN apk add --no-cache bash wget tar grep
+
+COPY api/tacticalrmm/tacticalrmm/settings.py /tmp/settings.py
+
+RUN rm -rf ${PUBLIC_DIR}/*
+COPY --from=build /web/dist/ ${PUBLIC_DIR}/
+RUN chown -R nginx:nginx /etc/nginx && chown -R nginx:nginx ${PUBLIC_DIR}
+
+COPY docker/containers/tactical-frontend/entrypoint.sh /docker-entrypoint.d/
+RUN chmod +x /docker-entrypoint.d/entrypoint.sh
+
+USER nginx
+
+EXPOSE 8080

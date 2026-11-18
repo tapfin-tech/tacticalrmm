@@ -136,12 +136,21 @@ def rand_range(min: int, max: int) -> float:
     return round(random.uniform(min, max) / 1000, 2)
 
 
+def get_nats_admin_password() -> str:
+    """
+    Password of the NATS 'tacticalrmm' admin user, which can command every agent.
+    Kept apart from SECRET_KEY so a leak of one does not give the other;
+    falls back to SECRET_KEY for installs that have not set it.
+    """
+    return getattr(settings, "NATS_ADMIN_PASSWORD", "") or settings.SECRET_KEY
+
+
 def setup_nats_options() -> dict[str, Any]:
     opts = {
         "servers": get_nats_url(),
         "user": "tacticalrmm",
         "name": "trmm-django",
-        "password": settings.SECRET_KEY,
+        "password": get_nats_admin_password(),
         "connect_timeout": 3,
         "max_reconnect_attempts": 2,
     }

@@ -52,6 +52,9 @@ class TestAccounts(TacticalTestCase):
     @patch("pyotp.TOTP.verify")
     def test_login_view(self, mock_verify):
         url = "/v2/login/"
+        # TOTP is only checked for users who have enrolled
+        self.bob.totp_key = "AB5RI6YPFTZAS52G"
+        self.bob.save()
 
         mock_verify.return_value = True
         data = {"username": "bob", "password": "hunter2", "twofactor": "123456"}
@@ -305,7 +308,17 @@ class TestUserReset(TacticalTestCase):
 
     def test_reset_pw(self):
         url = "/accounts/resetpw/"
+        self.john.set_password("OldSekret!98765")
+        self.john.save()
         data = {"password": "superSekret123456"}
+        r = self.client.put(url, data, format="json")
+        self.assertEqual(r.status_code, 400)
+
+        data["current_password"] = "wrong"
+        r = self.client.put(url, data, format="json")
+        self.assertEqual(r.status_code, 400)
+
+        data["current_password"] = "OldSekret!98765"
         r = self.client.put(url, data, format="json")
         self.assertEqual(r.status_code, 200)
 
@@ -313,10 +326,41 @@ class TestUserReset(TacticalTestCase):
 
     def test_reset_2fa(self):
         url = "/accounts/reset2fa/"
+        self.john.set_password("OldSekret!98765")
+        self.john.totp_key = "ABSA234234"
+        self.john.save()
         r = self.client.put(url)
+        self.assertEqual(r.status_code, 400)
+        self.john.refresh_from_db()
+        self.assertEqual(self.john.totp_key, "ABSA234234")
+
+        r = self.client.put(url, {"current_password": "OldSekret!98765"}, format="json")
         self.assertEqual(r.status_code, 200)
 
         self.check_not_authenticated("put", url)
+
+
+class TestSelfResetEndsOtherSessions(TacticalTestCase):
+    def setUp(self):
+        self.authenticate()
+        self.setup_coresettings()
+
+    def test_password_reset_logs_out_other_sessions(self):
+        from knox.models import AuthToken
+
+        self.john.set_password("OldSekret!98765")
+        self.john.save()
+        AuthToken.objects.create(self.john)
+        AuthToken.objects.create(self.john)
+        AuthToken.objects.create(self.alice)
+        r = self.client.put(
+            "/accounts/resetpw/",
+            {"current_password": "OldSekret!98765", "password": "NewSekret!12345678"},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(AuthToken.objects.filter(user=self.john).count(), 0)
+        self.assertEqual(AuthToken.objects.filter(user=self.alice).count(), 1)
 
 
 class TestAPIKeyViews(TacticalTestCase):

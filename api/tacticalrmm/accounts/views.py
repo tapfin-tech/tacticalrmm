@@ -4,6 +4,7 @@ import pyotp
 from allauth.socialaccount.models import SocialAccount, SocialApp
 from django.conf import settings
 from django.contrib.auth import login
+from django.contrib.auth.password_validation import validate_password
 from django.contrib.auth.validators import UnicodeUsernameValidator
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
@@ -11,7 +12,6 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone as djangotime
 from knox.models import AuthToken
 from knox.views import LoginView as KnoxLoginView
-from python_ipware import IpWare
 from rest_framework.authtoken.serializers import AuthTokenSerializer
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
@@ -22,10 +22,11 @@ from rest_framework.serializers import (
 )
 from rest_framework.views import APIView
 
-from accounts.utils import is_root_user
+from accounts.utils import is_root_user, privilege_change_error
 from core.tasks import sync_mesh_perms_task
 from logs.models import AuditLog
 from tacticalrmm.helpers import notify_error
+from tacticalrmm.security import get_client_ip, verify_totp
 from tacticalrmm.mixins import GenericPermsViewMixin
 from tacticalrmm.throttles import (
     CheckCredsDayThrottle,
@@ -111,25 +112,23 @@ class LoginViewV2(KnoxLoginView):
         if user.is_sso_user:
             return notify_error("Bad credentials")
 
-        token = request.data["twofactor"]
-        totp = pyotp.TOTP(user.totp_key)
+        token = request.data.get("twofactor", "")
 
         if settings.DEBUG and token == "sekret":
             valid = True
         elif getattr(settings, "DEMO", False):
             valid = True
-        elif totp.verify(token, valid_window=10):
+        elif verify_totp(user, token):
             valid = True
 
         if valid:
             login(request, user)
 
             # save ip information
-            ipw = IpWare()
-            client_ip, _ = ipw.get_client_ip(request.META)
+            client_ip = get_client_ip(request.META)
             if client_ip:
-                user.last_login_ip = str(client_ip)
-                user.save()
+                user.last_login_ip = client_ip
+                user.save(update_fields=["last_login_ip"])
 
             AuditLog.audit_user_login_successful(
                 request.data["username"], debug_info={"ip": request._client_ip}
@@ -260,6 +259,23 @@ class GetAddUsers(APIView):
         except ValidationError as e:
             return notify_error(str(e))
 
+        role = None
+        if "role" in request.data.keys() and isinstance(request.data["role"], int):
+            role = get_object_or_404(Role, pk=request.data["role"])
+            if err := privilege_change_error(request=request, role=role):
+                return notify_error(err)
+
+        try:
+            validate_password(
+                request.data["password"],
+                user=User(
+                    username=request.data["username"],
+                    email=request.data.get("email", ""),
+                ),
+            )
+        except ValidationError as e:
+            return notify_error(" ".join(e.messages))
+
         try:
             user = User.objects.create_user(  # type: ignore
                 request.data["username"],
@@ -275,8 +291,7 @@ class GetAddUsers(APIView):
             user.first_name = request.data["first_name"]
         if "last_name" in request.data.keys():
             user.last_name = request.data["last_name"]
-        if "role" in request.data.keys() and isinstance(request.data["role"], int):
-            role = get_object_or_404(Role, pk=request.data["role"])
+        if role is not None:
             user.role = role
 
         user.save()
@@ -298,6 +313,12 @@ class GetUpdateDeleteUser(APIView):
         if is_root_user(request=request, user=user):
             return notify_error("The root user cannot be modified from the UI")
 
+        new_role = None
+        if request.data.get("role"):
+            new_role = get_object_or_404(Role, pk=request.data["role"])
+        if err := privilege_change_error(request=request, target=user, role=new_role):
+            return notify_error(err)
+
         serializer = UserSerializer(instance=user, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
@@ -309,6 +330,8 @@ class GetUpdateDeleteUser(APIView):
         user = get_object_or_404(User, pk=pk)
         if is_root_user(request=request, user=user):
             return notify_error("The root user cannot be deleted from the UI")
+        if err := privilege_change_error(request=request, target=user):
+            return notify_error(err)
 
         user.delete()
         sync_mesh_perms_task.delay()
@@ -323,6 +346,13 @@ class UserActions(APIView):
         user = get_object_or_404(User, pk=request.data["id"])
         if is_root_user(request=request, user=user):
             return notify_error("The root user cannot be modified from the UI")
+        if err := privilege_change_error(request=request, target=user):
+            return notify_error(err)
+
+        try:
+            validate_password(request.data["password"], user=user)
+        except ValidationError as e:
+            return notify_error(" ".join(e.messages))
 
         user.set_password(request.data["password"])
         user.save()
@@ -334,6 +364,8 @@ class UserActions(APIView):
         user = get_object_or_404(User, pk=request.data["id"])
         if is_root_user(request=request, user=user):
             return notify_error("The root user cannot be modified from the UI")
+        if err := privilege_change_error(request=request, target=user):
+            return notify_error(err)
 
         user.totp_key = ""
         user.save()
@@ -376,6 +408,10 @@ class GetAddRoles(APIView):
     def post(self, request):
         serializer = RoleSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        if serializer.validated_data.get("is_superuser") and (
+            err := privilege_change_error(request=request, role=Role(is_superuser=True))
+        ):
+            return notify_error(err)
         serializer.save()
         return Response("Role was added")
 
@@ -389,14 +425,22 @@ class GetUpdateDeleteRole(APIView):
 
     def put(self, request, pk):
         role = get_object_or_404(Role, pk=pk)
+        if err := privilege_change_error(request=request, role=role):
+            return notify_error(err)
         serializer = RoleSerializer(instance=role, data=request.data)
         serializer.is_valid(raise_exception=True)
+        if serializer.validated_data.get("is_superuser") and (
+            err := privilege_change_error(request=request, role=Role(is_superuser=True))
+        ):
+            return notify_error(err)
         serializer.save()
         sync_mesh_perms_task.delay()
         return Response("Role was edited")
 
     def delete(self, request, pk):
         role = get_object_or_404(Role, pk=pk)
+        if err := privilege_change_error(request=request, role=role):
+            return notify_error(err)
         role.delete()
         sync_mesh_perms_task.delay()
         return Response("Role was removed")
@@ -441,13 +485,31 @@ class GetUpdateDeleteAPIKey(APIView):
         return Response("The API Key was deleted")
 
 
+def _logout_other_sessions(request) -> None:
+    """After a credential change, end every other dashboard session of the user."""
+    current = getattr(request, "auth", None)
+    tokens = AuthToken.objects.filter(user=request.user)
+    if isinstance(current, AuthToken):
+        tokens = tokens.exclude(digest=current.digest)
+    tokens.delete()
+
+
 class ResetPass(APIView):
     permission_classes = [IsAuthenticated, SelfResetSSOPerms]
 
     def put(self, request):
         user = request.user
+        if not user.check_password(request.data.get("current_password") or ""):
+            return notify_error("Current password is incorrect")
+
+        try:
+            validate_password(request.data["password"], user=user)
+        except ValidationError as e:
+            return notify_error(" ".join(e.messages))
+
         user.set_password(request.data["password"])
         user.save()
+        _logout_other_sessions(request)
         return Response("Password was reset.")
 
 
@@ -456,6 +518,10 @@ class Reset2FA(APIView):
 
     def put(self, request):
         user = request.user
+        if not user.check_password(request.data.get("current_password") or ""):
+            return notify_error("Current password is incorrect")
+
         user.totp_key = ""
         user.save()
+        _logout_other_sessions(request)
         return Response("2FA was reset. Log out and back in to setup.")

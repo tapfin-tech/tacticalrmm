@@ -81,7 +81,9 @@ class GetEditCoreSettings(APIView):
 
     def get(self, request):
         settings = CoreSettings.objects.first()
-        return Response(CoreSettingsSerializer(settings).data)
+        return Response(
+            CoreSettingsSerializer(settings, context={"request": request}).data
+        )
 
     def put(self, request):
         data = request.data.copy()
@@ -93,6 +95,13 @@ class GetEditCoreSettings(APIView):
             data["sync_mesh_with_trmm"] = True
             data["enable_server_scripts"] = False
             data["enable_server_webterminal"] = False
+
+        # a masked placeholder sent back unchanged must not overwrite the secret
+        from core.serializers import CORE_SECRET_FIELDS, SECRET_MASK
+
+        for field in CORE_SECRET_FIELDS:
+            if data.get(field) == SECRET_MASK:
+                data.pop(field)
 
         coresettings = CoreSettings.objects.first()
         serializer = CoreSettingsSerializer(
